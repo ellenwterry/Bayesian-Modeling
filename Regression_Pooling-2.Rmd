@@ -18,15 +18,10 @@ The data comes from the *Automobile Price Prediction.csv* dataset *(which you sh
 * model  *(the grouping variable)*
 * horsepower *(the indepedent variable)*
 
-## Model 1  - No Pooling
+## Full Pooling, No Pooling and Partial Pooling (using lmer)
 
-The no-pooled model with comments is shown below:
+The following uses lm to generate a fully pooled model, lmlist to generate no pooled models, and lmer to generate partially pooled models: 
 
-Note how the equation for y_hat is nested with a and b defined by primary key with foreign keys in the data (x).
-
-### Analysis - Model 1
-
-After mapping the model parameters by make *(see R file)*, the following plot summarizes the no-pool approach, compared to a frequentist mixed-effects model in lme4:
 
 ```{r, message=F, warning=F, echo=F, results="hide"}
 
@@ -43,8 +38,7 @@ rmse <- function(error)
 
 set.seed(103)
 
-setwd("C:/Users/ellen/Documents/UH/Spring 2020/DA2/Section 2/Bayes Intrro")
-Autos <- read.csv("Automobile Price Prediction.csv")
+Autos <- read.csv("C:/Users/ellen/Documents/UH/Fall 2020/Class Materials/Section II/Pooling/Automobile Price Prediction.csv")
 Autos <- rowid_to_column(Autos, var="SampleID") # this creates a primary key (you have to be careful with rownames)
 by_MakeStyle <- Autos %>% group_by(make) %>% dplyr::mutate(cnt = n()) %>% filter(cnt > 1) 
 train <- sample_frac(by_MakeStyle, .6) %>% ungroup()
@@ -64,75 +58,33 @@ p_a <- lmerCoef[,1]
 p_b <- lmerCoef[,2]
 
 
-stanModel1 <- '
-data {
-int<lower=0> N;
-int<lower=0> J;
-vector[N] y;
-real x[N];
-int make[N];
-real p_a[J];
-real p_b[J];
-}
-parameters {
-real<lower = 0> sigma;
-vector[J] a;
-vector[J] b;
-}
-transformed parameters {
-vector[N] y_hat;
-for (i in 1:N) 
-y_hat[i] = a[make[i]] + b[make[i]] * x[i];
-}
-model {
-target += normal_lpdf(y | y_hat,  sigma);
-target += normal_lpdf(a | p_a, 200);
-target += normal_lpdf(b | p_b, 20);
-}
-'
-
-stanData <- list(
-  N=nrow(train),
-  J=length(unique(train$make)),
-  y=train$price,
-  x=train$horsepower,
-  make=train$makeID,
-  p_a = p_a,
-  p_b = p_b
-)
+NoPoolCoef = lmList(price ~ horsepower | make, data = train, RMEL = FALSE) %>% 
+  coef() %>%
+  rownames_to_column("Description")
 
 
-fit1 <- stan(model_code = stanModel1, data = stanData, refresh = 0)
+NPCoef <- data.frame(Model = "NoPool", 
+                       make = NoPoolCoef$Description, 
+                       Intercept = NoPoolCoef$`(Intercept)`, 
+                       Slope = NoPoolCoef$horsepower)
 
-sumFit1 <- data.frame(summary(fit1))
-#Intercept <- sumFit1[2:20, 1] 
-#Slope <- sumFit1[21:39, 1] 
-
-Intercept1 <- summary(fit1, pars = c("a"), probs = c(0.1, 0.9))$summary
-Slope1 <- summary(fit1, pars = c("b"), probs = c(0.1, 0.9))$summary
-yHat1 <- summary(fit1, pars = c("y_hat"), probs = c(0.1, 0.9))$summary
-
-CoefMap <- data.frame(Intercept = Intercept1[,1], Slope = Slope1[,1]) 
-CoefMap <- cbind(map, CoefMap)
-colnames(CoefMap)[1] <- "make"
-
-TestPred <- test %>% inner_join(CoefMap, by = "make") %>% 
-  mutate(y_hat = Intercept + (Slope * horsepower)) %>% 
-  select (makeID, make, horsepower, price, y_hat)
-
-BayesMap <- data.frame(Model = "NoPool", 
-                       make = unique(train$make), 
-                       Intercept = Intercept1[,1], 
-                       Slope = Slope1[,1])
-
-lmerCoef1 <- data.frame(coef(lmerMod)$make) %>% rownames_to_column("Make")
+lmerCoef1 = data.frame(coef(lmerMod)$make) %>% 
+  rownames_to_column("Make")
 
 BayesMapLM <- data.frame(Model = "lmer", 
                          make = unique(train$make), 
                          Intercept = lmerCoef$`(Intercept)`, 
                          Slope = lmerCoef$horsepower)
 
-BayesMap <- rbind(BayesMap, BayesMapLM)
+FPCoef = coef(lm(price ~ horsepower, data = train))
+
+FPMap = data.frame(Model = "FullPool", 
+                         make = unique(train$make), 
+                         Intercept = FPCoef[1], 
+                         Slope = FPCoef[2])
+
+
+BayesMap <- rbind(BayesMapLM, NPCoef, FPMap)
 
 ```
 
@@ -148,20 +100,13 @@ p <- ggplot(data = train) +
 p
 
 ```
-
-Comparing the RMSEs between models, we would expect the results to be very close:
-
-```{r, message=F, warning=F, fig.width=4, fig.height=3, fig.align="center"}
-
-TestPred$lmerPred <- predict(lmerMod, TestPred)
-rmse(TestPred$lmerPred - TestPred$price)
-rmse(TestPred$y_hat - TestPred$price)
-
-```
+NOtice how many groups have no model for NoPool. Why?
 
 ## Model 2  - Partial Pooling
 
-The partial-pooling model is uses the same Stan model, but this time we use priors to pull parameters towards the mean *(which is the partial pooling effect)*. We can do this as follows:  
+Now we'll use a Bayesian Model to tweak partial pooling
+
+First lets use 
 
 ```{r, message=F, warning=F, echo=F, results="hide"}
 
@@ -169,12 +114,6 @@ p_aBU <- p_a
 p_bBU <- p_b
 p_a <- rep(mean(p_a),length(p_a))
 p_b <- rep(mean(p_b),length(p_b))
-
-CMapBU = CoefMap
-#CoefMap = CMapBU
-TestPredBU = TestPred
-#TestPred = TestPredBU
-
 
 stanModel2 <- '
 data {
@@ -218,9 +157,6 @@ stanData <- list(
 )
 
 
-#  p_aSigma = 20,
-#  p_bSigma = 5   
-
 
 fit2 <- stan(model_code = stanModel2, data = stanData, refresh = 0)
 
@@ -229,28 +165,18 @@ sumFit2 <- data.frame(summary(fit2))
 # build on this
 Intercept2 <- summary(fit2, pars = c("a"), probs = c(0.1, 0.9))$summary
 Slope2 <- summary(fit2, pars = c("b"), probs = c(0.1, 0.9))$summary
-yHat2 <- data.frame(summary(fit2, pars = c("y_hat"), probs = c(0.1, 0.9))$summary)
 
-CoefMap$Intercept2 <- Intercept2[,1]
-CoefMap$Slope2 <- Slope2[,1]
+BayesMap2 <- data.frame(Model = "Bayes", 
+                         make = unique(train$make), 
+                         Intercept = Intercept2[,1], 
+                         Slope = Slope2[,1])
 
-TestPred = TestPred %>% inner_join(CoefMap, by = "make") %>% mutate(y_hat2 = Intercept2 + (Slope2 * horsepower)) 
-
-
-BayesMapPool <- data.frame(Model = "P-Pool", 
-                       make = unique(train$make), 
-                       Intercept = Intercept2[,1], 
-                       Slope = Slope2[,1])
-
-BayesMap <- rbind(BayesMap, BayesMapPool)
+BayesMap <- rbind(BayesMap, BayesMap2)
 
 ```
 
 
 ```{r, message=F, warning=F, fig.width=6, fig.height=6, fig.align="center"}
-
-pBU = p
-#p = pBU
 
 p <- ggplot(data = train) + 
   aes(x = horsepower, y = price) + 
@@ -276,16 +202,4 @@ There are many possible combinations of pooling and with most data, even a simpl
 * Partial pooling lets us create predictions for groups that have little data *(a no pooled model will fail if there are few data points)* 
 
 * Generalization. Using nested models with priors gives us the ability to generalize models in a very targeted way - by group, by paramter. This level of control is just not possible with any other approach to modeling.
-
-Comparing RMSE's for all models *(Bayes No-Pool, LME4, Bayes Partial-Pool)*:
-
-```{r, message=F, warning=F, fig.width=4, fig.height=3, fig.align="center"}
-
-rmse(TestPred$lmerPred - TestPred$price)
-rmse(TestPred$y_hat - TestPred$price)
-rmse(TestPred$y_hat2 - TestPred$price)
-
-```
-
-Note that partial pooling does not always yield a lower RMSE. But this is RMSE with the **TEST** data. As you've learned from generalization, the point is to prepare models for real data - to avoid overfitting. The idea of pooling **BY PARAMETER** gives us total control over our models.
 
