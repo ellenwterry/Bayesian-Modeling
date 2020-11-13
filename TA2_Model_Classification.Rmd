@@ -1,0 +1,257 @@
+
+---
+title: "TA2_Models_Bayesian_Classification"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+## Introduction
+
+The objective is to build a Bayesian model to predict successful sales opportunities before we assign engineering resources. We have data from the proposal management system that tracks RFPs *(Request for Proposals)* recieved for engineered products. After intial transformation, the following dimensions are included in the analysis:
+
+* SampleID  
+* RSF *(Relationship Strength Factor)*  
+* QuoteDiff *(diffence between our quote and primary competitor quote)*  
+* RFPDiff *(difference between the dates the RFP response was requested, and when it was returned)*  
+* ATPDifference *(diffeence between the available to promise - ATP - date and the date required)*  
+* Result *(whether the opportunity was won or lost)*  
+
+## Model
+
+The data are not hierarchical - each observation is exchangable, so a single-level, multiple regression model is used, which is transformed to a classification model using a logit function.
+
+A few final transformations were implemented:  
+
+* The ATPDifference as scaled down *(divided by 1000)* to bring it into scale with the other dimensions and help the sampler.  
+
+* Data was divided into using a holdout validation set of 100 observations, with the rest for training.  
+
+* RSF is an ordinal factor, so it is transformed directly to an integer which will easily work within a logistic regression equation.
+
+### Model Development and Training
+
+
+### Model Testing
+
+The approach to testing is to pull the estimated parameters out of the sampler, analyze the distributions of the parmaeters and evaluate test data using those parameters in a test set.
+
+To do this, we use a typical logistic regression equation format:
+
+$P(y)=exp(b_0 + (b_1X...) / exp(1+ exp(b_0+b_1X...)$  
+
+Which converts to the following in R for our parameter set:  
+
+$Prob <-  (exp(alpha[1]+ (beta[1]*test[2]+ beta[2]*test[3]+beta[3]*test[4]+beta[4]*test[5])))/(1+(exp(alpha[1]+ (beta[1]*test[2]+ beta[2]*test[3]+beta[3]*test[4]+beta[4]*test[5]))))$  
+
+This produced a probablity of success, which is also coverted to a bernoulli as described below.  
+### Results
+
+Results were tested with the holdout data. After pulling the parameters from the sampler, we used the above equation to compute probability and then generated a binomial result using the following:  
+
+  test <- test %>% mutate(Pred = ifelse(Prob < .5, 0, 1))
+
+
+These results were run through a confusion matrix, with metrics as follows:
+
+```{r, message=F, warning=F, echo=F, results="hide"}
+
+library(tidyverse)
+library(rstan)
+library(shinystan)
+library(gridExtra)
+library(caret)
+library(cowplot)
+
+set.seed(117)
+
+setwd("C:/Users/ellen/Documents/UH/Spring 2020/DA2/tmpGitHub/EllenwTerry/Data_Files")
+
+stanMod <- '
+data {
+  int N_train; 
+  int K; 
+  int y_train[N_train]; 
+  row_vector[K] x_train[N_train]; 
+  real p_a; 
+  real p_b[K]; 
+  real p_sa; 
+  real p_sb[K]; 
+}
+parameters {
+  real alpha;
+  vector[K] beta;
+}
+transformed parameters {
+  vector[N_train] y_hat;
+  for(n in 1:N_train) 
+    y_hat[n] = alpha + x_train[n]*beta;
+}
+model {
+  target += normal_lpdf(alpha | p_a, p_sa);
+  target += normal_lpdf(beta | p_b, p_sb);
+  target += normal_lpdf(y_hat | 0, 1);
+  target += bernoulli_lpmf(y_train | inv_logit(y_hat));
+}
+'
+
+quoteData <- read.csv("QuoteData.csv")
+#head(quoteData)
+
+quoteData <- quoteData %>% rownames_to_column("SampleID")
+quoteData$SampleID  <- as.numeric(quoteData$SampleID)
+
+train <- sample_n(quoteData, nrow(quoteData)-100)
+test <- quoteData %>% anti_join(train, by = "SampleID")
+
+# scaling this down to help with matrix calculations
+train$QuoteDiff <- train$QuoteDiff/1000
+test$QuoteDiff <- test$QuoteDiff/1000
+
+
+# reorder columns
+xTrain <- dplyr::select(train, RSF, QuoteDiff, RFPDiff, ATPDiff)
+xTest <-  dplyr::select(test, RSF, QuoteDiff, RFPDiff, ATPDiff)
+
+x_train <- as.numeric(train$QuoteDiff)
+y_train <- as.integer(train$Result)
+N_train <- length(x_train) 
+
+fit <- stan(model_code=stanMod,
+            data = list(
+              N_train=nrow(xTrain),
+              K=ncol(xTrain), 
+              y_train=train$Result,
+              x_train=xTrain,
+              p_a = 0,
+              p_b = rep(0, 4),
+              p_sa = 1,
+              p_sb = rep(1, 4)
+            ), refresh = 0)
+
+extfit <- extract(fit)
+alpha <- summary(fit, pars = c("alpha"))$summary
+beta <- summary(fit, pars = c("beta"))$summary
+y_hat <- summary(fit, pars = c("y_hat"))$summary
+
+
+Prob <-  (exp(alpha[1]+ (beta[1]*test[2]+ beta[2]*test[3]+beta[3]*test[4]+beta[4]*test[5])))/(1+(exp(alpha[1]+ (beta[1]*test[2]+ beta[2]*test[3]+beta[3]*test[4]+beta[4]*test[5]))))
+
+test$Prob <- as.numeric(Prob$RSF)
+test <- test %>% mutate(Pred = ifelse(Prob < .5, 0, 1))
+
+```
+
+Confusion Matrix:
+
+```{r, message=F, warning=F, fig.width=4, fig.height=3, fig.align="center"}
+
+confusionMatrix(factor(test$Pred), factor(test$Result))
+
+```
+
+These results are acceptable *(80% accuracy in sales opportunitis is good - trust me)*. 
+
+Results were summarized by parameter and then plotted, comparing the average proability at a 95% confidence interval for each value of the dimension, using code as follows:
+
+```{r, message=F, warning=F, fig.width=6, fig.height=6, fig.align="center"}
+
+dfPlotRSF <- test %>% group_by(RSF) %>% summarise(meanP = mean(Prob), sdP = sd(Prob))
+p1 <- ggplot(dfPlotRSF, aes(x=meanP)) + geom_point(aes(y = RSF), color = 'blue') +
+  geom_errorbarh(aes(xmin= (meanP-sdP) , xmax = (meanP + sdP), y = RSF), height = 1, color = "red") +
+  theme(panel.background = element_rect(fill = "white")) +
+  theme(axis.title.x=element_blank())
+
+dfPlotQuote <- test %>% group_by(QuoteDiff) %>% summarise(meanP = mean(Prob), sdP = sd(Prob))
+p2 <- ggplot(dfPlotQuote, aes(x=meanP)) + geom_point(aes(y = QuoteDiff), color = 'blue') +
+  geom_errorbarh(aes(xmin= (meanP-sdP) , xmax = (meanP + sdP), y = QuoteDiff), height = 1, color = "red") +
+  theme(panel.background = element_rect(fill = "white")) +
+  theme(axis.title.x=element_blank())
+
+
+dfPlotATP <- test %>% group_by(ATPDiff) %>% summarise(meanP = mean(Prob), sdP = sd(Prob))
+p3 <- ggplot(dfPlotATP, aes(x=meanP)) + geom_point(aes(y = ATPDiff), color = 'blue') +
+  geom_errorbarh(aes(xmin= (meanP - sdP) , xmax = (meanP + sdP), y = ATPDiff), height = 1, color = "red") +
+  theme(panel.background = element_rect(fill = "white")) + 
+  theme(axis.title.x=element_blank())
+
+dfPlotRFP <- test %>% group_by(RFPDiff) %>% summarise(meanP = mean(Prob), sdP = sd(Prob))
+p4 <- ggplot(dfPlotRFP, aes(x=meanP)) + geom_point(aes(y = RFPDiff), color = 'blue') +
+  geom_errorbarh(aes(xmin= (meanP - sdP) , xmax = (meanP + sdP), y = RFPDiff), height = 1, color = "red") +
+  theme(panel.background = element_rect(fill = "white")) + 
+  theme(axis.title.x=element_blank())
+
+plot_grid(p1, p2, p3, p4, align = 'h')
+
+```
+
+
+## Analysis
+
+This all looks good *(consistent with experience)*. The only parameter that raised attention was RSF *(Relationship Strength Factor)* This is a composite index from multiple data sources *(historical W/L, years on account, call frequency, .... )* organized as an ordinal factor *(1 - none, 2 - developing, 3 - good, 4 - strong)*. So, it appeared strange that the probability of success is higher for 1 than a 2. Maybe the models weighting of RSF should be increased? That will be our "hypothesis".
+
+The priors were adjusted to increase the effect of RSF.
+
+This increases the RSF parameter weight, and also tightens the variance *(which expresses an increased confidence)*. The following is the result:  
+
+```{r, message=F, warning=F, echo=F, results="hide"}
+
+p_b2 <- beta[,1]
+p_b2[1] <- p_b2[1] + .5
+p_sb2 <- c(.1,.5,.5,.5)
+
+
+
+fit <- stan(model_code=stanMod,
+            data = list(
+              N_train=nrow(xTrain),
+              K=ncol(xTrain), 
+              y_train=train$Result,
+              x_train=xTrain,
+              p_a = 0,
+              p_b = p_b2,
+              p_sa = 2,
+              p_sb = p_sb2
+            ), refresh = 0)
+
+extfit2 <- extract(fit)
+alpha2 <- summary(fit, pars = c("alpha"))$summary
+beta2 <- summary(fit, pars = c("beta"))$summary
+y_hat2 <- summary(fit, pars = c("y_hat"))$summary
+
+
+Prob2 <-  (exp(alpha2[1]+ (beta2[1]*test[2]+ beta2[2]*test[3]+beta2[3]*test[4]+beta2[4]*test[5])))/(1+(exp(alpha[1]+ (beta2[1]*test[2]+ beta2[2]*test[3]+beta2[3]*test[4]+beta2[4]*test[5]))))
+
+test$Prob2 <- as.numeric(Prob2$RSF)
+test <- test %>% mutate(Pred2 = ifelse(Prob2 < .5, 0, 1))
+
+```
+
+
+```{r, message=F, warning=F, fig.width=4, fig.height=3, fig.align="center"}
+
+confusionMatrix(factor(test$Pred2), factor(test$Result))
+
+```
+
+
+Reviewing the matrix, increasing the effect of RSF reduced accuracy on the test set. So the data does not support our "hypothesis".
+
+Could it be that "None" describes a new relationship, and that the sales staff tends to overservice these opporutnities to get them on board? It turned out that this is the reason. So the RSF index was reevaluated to weight frequency of calls differently. 
+
+## Closing Thoughts
+
+Bayesian modeling increases our ability to analyze complex datasets by providing:  
+
+* **Increased Interpretability**. Notice how we were able to analyze each parameter and test the effect of changes. This provides a basis for understanding and testing specific effects *(not possible with non-parametric analysis)*
+
+* **Testing of Alternative Hypotheses using Priors**. Priors are used to compromise a model based on data with some blend of experience and prior data. In this example, we didn't use priors to change the model - we used priors to reject a casual hypothesis.
+
+* **Analysis Agility**. Bayesian models adapt more easily to new data and new questions as demonstrated here.
+
+
+
+
+
