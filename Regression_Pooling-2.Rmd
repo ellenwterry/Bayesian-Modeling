@@ -1,7 +1,7 @@
 
 ---
 title: "Bayesian Regression"
-subtitle: "Priors and Pooling"
+subtitle: "Priors and Pooling - Revisited with Last Weeks Data"
 output: pdf_document
 ---
 
@@ -23,7 +23,7 @@ The data comes from the *Automobile Price Prediction.csv* dataset *(which you sh
 The following uses lm to generate a fully pooled model, lmlist to generate no pooled models, and lmer to generate partially pooled models: 
 
 
-```{r, message=F, warning=F, echo=F, results="hide"}
+```{r, message=F, warning=F, echo=T, results="hide"}
 
 library(tidyverse)
 library(rstan)
@@ -89,7 +89,7 @@ BayesMap <- rbind(BayesMapLM, NPCoef, FPMap)
 ```
 
 
-```{r, message=F, warning=F, fig.width=6, fig.height=6, fig.align="center"}
+```{r, echo = T, message=F, warning=F, fig.width=6, fig.height=6, fig.align="center"}
 
 p <- ggplot(data = train) + 
   aes(x = horsepower, y = price) + 
@@ -108,12 +108,16 @@ Now we'll use a Bayesian Model to tweak partial pooling
 
 First lets use 
 
-```{r, message=F, warning=F, echo=F, results="hide"}
+```{r, message=F, warning=F, echo=T, results="hide"}
 
 p_aBU <- p_a
 p_bBU <- p_b
-p_a <- rep(mean(p_a),length(p_a))
-p_b <- rep(mean(p_b),length(p_b))
+#p_a <- rep(mean(p_a),length(p_a))
+#p_b <- rep(mean(p_b),length(p_b))
+
+p_a <- rep(FPCoef[1],length(p_a))
+p_b <- rep(FPCoef[2],length(p_b))
+
 
 stanModel2 <- '
 data {
@@ -144,6 +148,7 @@ target += normal_lpdf(a | p_a, p_aSigma);
 target += normal_lpdf(b | p_b, p_bSigma);
 }
 '
+
 stanData <- list(
   N=nrow(train),
   J=length(unique(train$make)),
@@ -152,8 +157,8 @@ stanData <- list(
   make=train$makeID,
   p_a = p_a,
   p_b = p_b,
-  p_aSigma = 100,
-  p_bSigma = 10   
+  p_aSigma = 1000,
+  p_bSigma = 50   
 )
 
 
@@ -173,10 +178,63 @@ BayesMap2 <- data.frame(Model = "Bayes",
 
 BayesMap <- rbind(BayesMap, BayesMap2)
 
+#BayesMap = filter(BayesMap, Model != "Bayes")
+
+
 ```
 
 
-```{r, message=F, warning=F, fig.width=6, fig.height=6, fig.align="center"}
+```{r, echo = T, message=F, warning=F, fig.width=6, fig.height=6, fig.align="center"}
+
+p <- ggplot(data = train) + 
+  aes(x = horsepower, y = price) + 
+  geom_point() +
+  geom_abline(data = BayesMap, aes(intercept = Intercept, slope = Slope, color = Model),
+              size = .75) + 
+  facet_wrap("make") 
+p
+
+```
+Now, let's tighten up the priors a bit and see what that does to pooling:
+
+```{r, echo = T, message=F, warning=F, fig.width=6, fig.height=6, fig.align="center"}
+
+
+stanData <- list(
+  N=nrow(train),
+  J=length(unique(train$make)),
+  y=train$price,
+  x=train$horsepower,
+  make=train$makeID,
+  p_a = p_a,
+  p_b = p_b,
+  p_aSigma = 10,
+  p_bSigma = 1   
+)
+
+
+
+fit3 <- stan(model_code = stanModel2, data = stanData, refresh = 0)
+
+sumFit3 <- data.frame(summary(fit3))
+
+# build on this
+Intercept3 <- summary(fit3, pars = c("a"), probs = c(0.1, 0.9))$summary
+Slope3 <- summary(fit3, pars = c("b"), probs = c(0.1, 0.9))$summary
+
+
+BayesMap3 <- data.frame(Model = "Bayes2", 
+                        make = unique(train$make), 
+                        Intercept = Intercept3[,1], 
+                        Slope = Slope3[,1])
+
+BayesMap <- rbind(BayesMap, BayesMap3)
+
+```
+
+
+
+```{r, echo = T, message=F, warning=F, fig.width=6, fig.height=6, fig.align="center"}
 
 p <- ggplot(data = train) + 
   aes(x = horsepower, y = price) + 
