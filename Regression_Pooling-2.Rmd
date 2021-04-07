@@ -100,7 +100,7 @@ p <- ggplot(data = train) +
 p
 
 ```
-NOtice how many groups have no model for NoPool. Why?
+Notice how many groups have no model for NoPool. Why?
 
 ## Model 2  - Partial Pooling
 
