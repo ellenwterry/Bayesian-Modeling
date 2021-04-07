@@ -196,8 +196,6 @@ QuoteDiff appears to be the best predictor of Win %. Let's turn the analysis aro
 
 Quick Priors:
 ```{r, message=F, warning=F, fig.width=6, fig.height=6, fig.align="center", echo=T}
-# quoteDataBU = quoteData
-# quoteData = quoteDataBU
 
 quoteData$Result = quoteData$Result + 1
 quoteData$Result = factor(quoteData$Result)
@@ -226,7 +224,7 @@ p
 ```
 What do you see? Any patterns? Is there a relationship between ATP, Tier and WvL? What could be causes? Why does the spread between W and L change so much for Green? Let's so this:
 
-Build a Stan Regression model and determine the Win probability for green vs platinum tier for different QuoteDiffs:
+Build a Stan Regression model and determine the Win probability for green vs platinum tier for different QuoteDiffs. First we build a model that predicts the QuoteDiff, given the other dimensions *(including WL result)*
 
 ```{r, message=F, warning=F, fig.width=6, fig.height=6, fig.align="center", echo=T}
 
@@ -297,7 +295,7 @@ stanData <- list(
 fit1 <- stan(model_code = stanModel1, data = stanData, refresh = 0)
 
 ```
-And look at the 
+Now we can get the effects of each dimension.
 
 ```{r, message=F, warning=F, fig.width=6, fig.height=3, fig.align="center", echo=T}
 sumFit1 <- data.frame(summary(fit1))
@@ -317,26 +315,21 @@ dWSD = sd(filter(quoteData, Result == 2)$QuoteDiff)
 dLMn = mean(filter(quoteData, Result == 1)$QuoteDiff)
 dLSD = sd(filter(quoteData, Result == 1)$QuoteDiff)
 
-p10 <- ggplot(quoteData) + 
-  geom_line(aes(QuoteDiff,y= dnorm(QuoteDiff, mean = dMn, sd = dSD)), color  = 'gray') +
-  geom_line(aes(QuoteDiff,y= 
-    dnorm(QuoteDiff, mean = mean(filter(quoteData, Result == 2)$QuoteDiff), 
-          sd = sd(filter(quoteData, Result == 2)$QuoteDiff))), color  = 'skyblue1') +
-  geom_line(aes(QuoteDiff,y= dnorm(QuoteDiff, mean = mean(filter(quoteData, Result == 1)$QuoteDiff), 
-          sd = sd(filter(quoteData, Result == 1)$QuoteDiff))), color  = 'tomato1') +
-  xlim(-60, 60) +  ylab("density") +
-  theme(panel.background = element_rect(fill = "white")) 
-# p10
 
 ```
+and we can use the effects to model te density of a win *(ResultEffect[2])*, comparing green RSFEffect[1] customers with platinum customers RSFEffect[4]. The value of RSF is evident here as platinum customers 
 
 ```{r, message=F, warning=F, fig.width=6, fig.height=3, fig.align="center", echo=T}
 1 - pnorm(0, dWMn, dWSD)
 
-# RSF Effects - quote = compeitor, ATP = Required
+# RSF Effects - quote = competitor, ATP = Required
 p10 <- ggplot(quoteData) + 
-  geom_line(aes(QuoteDiff,y= dnorm(QuoteDiff, mean = dMn+RSFEffect[1]+ResultEffect[1]+(ATPEffect*ATPDiff), sd = sigma[1])), color  = 'darkgreen') +
-  geom_line(aes(QuoteDiff,y= dnorm(QuoteDiff, mean = dMn+RSFEffect[4]+ResultEffect[1]+(ATPEffect*ATPDiff), sd = sigma[4])), color  = 'darkgray') +
+  geom_line(aes(QuoteDiff,
+                y= dnorm(QuoteDiff, 
+                         mean = dMn+RSFEffect[1]+ResultEffect[2]+(ATPEffect*ATPDiff), 
+                         sd = sigma[1])), color  = 'darkgreen') +
+  geom_line(aes(QuoteDiff,y= dnorm(QuoteDiff, mean = dMn+RSFEffect[4]+ResultEffect[2]+(ATPEffect*ATPDiff), 
+                                   sd = sigma[4])), color  = 'darkgray') +
   xlim(-30, 30) +  
   ylab("Win Density") +
   theme(panel.background = element_rect(fill = "white")) 
@@ -344,20 +337,4 @@ p10
 
 ```
 Just looking at these distributions, we can see that the platinum customers are more likely to place orders when RT's prices are higher than competitors. Perhaps that's because new customers are just price shopping?
-
-But we already knew that didn't we? And we can get this from an dashboard. The mark of an analyst is whether we can provide **credible, quantitative metrics to describe the relationships - the drivers of business**. In this case, Baysian analysis again provides us with the tools - do you know how to calculate that? What if we want to know the probability of a win if we match competitor price, and ATP is 70 *(no problem delivering on time)*. Compare Green and Platinum:
-
-Here's what I get:
-
-```{r, message=F, warning=F, fig.width=6, fig.height=6, fig.align="center", echo=T}
-
-# QuoteDiff = 0, RSFEffect[Green] + Result[Win] + ATPEffect[70] 
-pnorm(0, dMn+RSFEffect[1]+ResultEffect[1]+(ATPEffect*70), dWSD) 
-# QuoteDiff = 0, RSFEffect[Green] + Result[Win] + ATPEffect[70] 
-pnorm(0, dMn+RSFEffect[4]+ResultEffect[1]+(ATPEffect*70), dWSD) 
-
-
-```
-So, about 90% for Platimum, but 70% for Green *(more price sensitivity)*?
-
 
